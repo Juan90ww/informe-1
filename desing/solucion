@@ -1,0 +1,44 @@
+#define TIMER_BASE   0x41C00000u
+#define PWM_BASE     0x44A00000u
+#define ADC_BASE     0x44A10000u
+#define UART_BASE    0x40600000u
+#define GPIO_BASE    0x40000000u
+
+#define TIMER_LOAD   10000u          // 100 MHz x 100 us
+#define KP           /* ganancia en punto fijo */
+
+static volatile uint16_t buf[256];
+static volatile uint32_t idx = 0;
+
+void init(void) {
+    Xil_Out32(TIMER_BASE + 0x04, TIMER_LOAD);
+    Xil_Out32(PWM_BASE   + 0x04, 0);                // duty = 0
+    Xil_Out32(PWM_BASE   + 0x00, 0x1);              // enable, 10 kHz
+    /* configurar INTC y habilitar interrupciones */
+    Xil_Out32(TIMER_BASE + 0x00, 0x7);              // START | AUTO_RELOAD | INT_EN
+}
+
+void isr_timer(void) {
+    Xil_Out32(TIMER_BASE, Xil_In32(TIMER_BASE) | (1u << 3));    // limpia TIMEOUT
+    Xil_Out32(ADC_BASE, 0x1);                                   // inicia conversión
+    while (!(Xil_In32(ADC_BASE) & 0x2)) { }                     // espera CONV_READY
+    int32_t s = Xil_In32(ADC_BASE + 0x04) & 0xFFF;
+    int32_t e = ref - (s - 2048);
+    int32_t u = (KP * e) >> /* escala */;
+    if (u >  32767) u =  32767;
+    if (u < -32767) u = -32767;
+    Xil_Out32(PWM_BASE + 0x04, (uint32_t)(u & 0xFFFF));
+    buf[idx++ & 0xFF] = s;
+}
+
+int main(void) {
+    init();
+    while (1) {
+        if (Xil_In32(GPIO_BASE) & 0x1) {
+            for (int i = 0; i < 256; i++) {
+                while (!(Xil_In32(UART_BASE) & 0x8)) { }        // espera TX_READY
+                Xil_Out32(UART_BASE + 0x04, buf[i] & 0xFF);
+            }
+        }
+    }
+}
